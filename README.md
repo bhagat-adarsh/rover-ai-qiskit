@@ -62,3 +62,4 @@ pip install tensorflow qiskit pygame numpy
 # rover-ai-qiskit
 # rover-ai-qiskit
 # rover-ai-qiskit
+*NOTE--Its a sample project dedicating to exploring the qiskit framework*
