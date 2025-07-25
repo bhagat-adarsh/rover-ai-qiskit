@@ -1,4 +1,5 @@
 # rover-ai-qiskit
+#RUN main.py after setting up the dependencies
 
 
 # 🚀 Mars Rover AI with Quantum-Inspired Action Selection
