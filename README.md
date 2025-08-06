@@ -44,6 +44,17 @@ The rover doesn't always pick the highest Q-value. Instead, it:
 
 ---
 
+
+## 🧠 Project Highlights
+
+- **Deep Q-Network (DQN)**: Learns optimal actions to navigate to a goal on a grid.
+- **Grover's Algorithm**: Enhances action selection with quantum computation.
+- **Quantum Backend**: Uses IBM Quantum (e.g., `ibm_mumbai`) for running circuits.
+- **Pygame**: Real-time visualization of the Mars rover's movement.
+- **Firebase**: Logs training progress remotely to Firestore.
+- **Environment**: Grid-based Mars terrain with obstacles, a rover start point, and a goal.
+
+
 ## 🛠 Requirements
 
 - Python 3.10+
