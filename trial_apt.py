@@ -1,4 +1,4 @@
-# mars_rover_sim.py
+#AI generated first sample base no use for the implementer so dont read
 
 import numpy as np
 import tensorflow as tf
