@@ -1,8 +1,22 @@
 import numpy as np
 import tensorflow as tf
 from qiskit import QuantumCircuit
-from qiskit_ibm_provider import IBMProvider
-from qiskit_ibm_provider.accounts.exceptions import AccountNotFoundError
+from qiskit import transpile
+
+# try to import IBM runtime optional but we will not use in local simulation
+try:
+    from qiskit_ibm_runtime import QiskitRuntimeService
+    HAVE_IBM_RUNTIME = True
+except Exception:
+    HAVE_IBM_RUNTIME = False
+
+# Aer simulator local quantum runs ke liye
+try:
+    from qiskit_aer import AerSimulator
+    HAVE_AER = True
+except Exception:
+    HAVE_AER = False
+
 import random
 import pygame
 import sys
@@ -13,153 +27,161 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# Load .env and get IBM token
+# .env load karo aur token uthao
 load_dotenv()
 token = os.getenv("IBM_QUANTUM_TOKEN")
 
-# Initialize Firebase
+if HAVE_IBM_RUNTIME and token:
+    try:
+        QiskitRuntimeService.save_account(channel="ibm_quantum", token=token, overwrite=True)
+    except Exception:
+        # if save fails then ..........
+        pass
+
+# Firebase setup  firebase-key.json is must to be there in the folder
 cred = credentials.Certificate("firebase-key.json")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# Store best reward
-###global best_total_reward
-best_total_reward = float('-inf')
+best_total_reward = float('-inf') # foir saving best model
 
-# extracting token from THe IBM Quantum account
-def get_ibm_provider():
+# optional IBM service maybe will work ith better hardware
+#TODO:give it a check try google collab for cloud GPU services
+
+ 
+def get_ibm_service():
+    if not HAVE_IBM_RUNTIME:
+        return None
     try:
-        provider = IBMProvider()
-        # Check if the account is saved
-    except AccountNotFoundError:
-        #TODO: remove the input prompt in production
-        print("[ERROR] IBM Quantum account not found.")
-        print("Please paste your IBM Quantum API token below to save it:")
-        token = input("IBM Quantum API Token: ").strip()
-        IBMProvider.save_account(token, overwrite=True)
-        print("\u2705 IBM Quantum account saved. Re-running with credentials...\n")
-        provider = IBMProvider()
-    return provider
+        service = QiskitRuntimeService(channel="ibm_quantum_platform")
+    except Exception:
+        print("[ERROR] IBM Runtime service nahi mila Token set karo ya .env me daalo")
+        token_input = input("IBM Quantum API Token ya enter skip ke liye").strip()
+        if token_input:
+            QiskitRuntimeService.save_account(channel="ibm_quantum", token=token_input, overwrite=True)
+            service = QiskitRuntimeService()
+        else:
+            return None
+    return service
 
-
-#DEFines the envoirment for the stimulation jaise start position goal kya hai and all+obstacles
+# Mars environment define using pygaem
 class MarsEnv:
     def __init__(self, size=8, num_obstacles=10):
         self.size = size
         self.num_obstacles = num_obstacles
-        self.reset()
-    #Intitialising the window
-    #pygame ki tarah
-    #start top left corner GOAL FIXED AT BOTTOM RANDOM OBSTACLE HOGA GENERATE BICH MAI
-    #TODO : Obstacles needs to be increased 
+        self.reset() # initialize karo
+
+    # environment reset
     def reset(self):
         self.grid = np.zeros((self.size, self.size))
-        self.rover_pos = [0, 0]
-        self.goal_pos = [self.size - 1, self.size - 1]
+        self.rover_pos = [0, 0] 
+        self.goal_pos = [self.size - 1, self.size - 1] 
         placed = 0
         while placed < self.num_obstacles:
             x, y = random.randint(1, self.size - 2), random.randint(1, self.size - 2)
             if [x, y] != self.rover_pos and [x, y] != self.goal_pos and self.grid[x, y] != -1:
-                self.grid[x, y] = -1
+                self.grid[x, y] = -1 # obstacle place karo
                 placed += 1
         return self.get_state()
 
+    # state normalize then send to network
     def get_state(self):
         return np.array(self.rover_pos + self.goal_pos, dtype=np.float32) / (self.size - 1)
-    #action kai bad step analyze karna hai
+
+    # reward and moves 
     def step(self, action):
         x, y = self.rover_pos
-        moves = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+        moves = [(0, 1), (1, 0), (0, -1), (-1, 0)] 
         dx, dy = moves[action]
         new_x, new_y = x + dx, y + dy
 
         if 0 <= new_x < self.size and 0 <= new_y < self.size:
             if self.grid[new_x, new_y] == -1:
-                return self.get_state(), -5, True
+                return self.get_state(), -5, True # obstacle hit then end of one episode
 
             self.rover_pos = [new_x, new_y]
 
         done = self.rover_pos == self.goal_pos
-        reward = 10 if done else -0.1
+        reward = 10 if done else -0.1 # goal reach +10 har step -0.1
         return self.get_state(), reward, done
-    
-    #+10 reward if the rover reaches the goal
 
-    #-0.1 penalty for each step (to encourage faster solutions)
-
-    #-5 penalty if the rover hits an obstacle (and episode ends)
-
-
-#usecase of the grovers algorithm to slect tjhe best action based on Q-values
-#grover algorithm here  finda a target item faster then a classical one in a unsorted list of size 'N' O( root N​ ) time
-#sada states ko equally liya (superposition)
-#Superposition: Prepare all possible states equally.
-
-#Oracle: Flip the sign of the target state (marking it). Amplification (Diffusion): Amplify the marked state’s probability.Repeat steps 2 and 3 about 𝑁 N  times, then measure
-def grover_select_action(q_values, provider):
+# quantum inspired action selection using grover like circuit
+def grover_select_action(q_values):
     original_len = len(q_values)
-    padded_len = 2 **math.ceil(math.log2(original_len))#Quantum circuits need sizes that are powers of 2.
+    if original_len == 0:
+        return 0
+    # pad to power of 2 for quantum circuit
+    padded_len = 2 ** math.ceil(math.log2(original_len))
     padded_q = np.zeros(padded_len)
-    padded_q[:original_len] =q_values
+    padded_q[:original_len] = q_values
     best_action = int(np.argmax(padded_q))
     n = int(math.log2(padded_len))
 
+    # circuit build with superposition oracle diffusion#TODO: GIVE IT A DETAILED STUDY MORE THAN WHAT IS KNOWN
     qc = QuantumCircuit(n, n)
-    qc.h(range(n))
+    qc.h(list(range(n))) # superposition
 
-    bin_str = format(best_action, f'0{n}b')#ORAcle: Convert the best action to binary string with padding.
+    bin_str = format(best_action, f'0{n}b')
+    # oracle mark best_action
     for i, bit in enumerate(bin_str):
         if bit == '0':
             qc.x(i)
-    if n> 1:
-        qc.h(n-1)
-        qc.mcx(list(range(n-1)), n-1)
-        qc.h(n-1)
+    if n > 1:
+        qc.h(n -1)
+        qc.mcx(list(range(n -1)),n-1)
+        qc.h(n -1)
     else:
         qc.z(0)
     for i, bit in enumerate(bin_str):
         if bit =='0':
             qc.x(i)
 
-    qc.h(range(n))
-    qc.x(range(n))
+    # diffusion amplifys probability
+    qc.h(list(range(n)))
+    qc.x(list(range(n)))
     if n > 1:
         qc.h(n - 1)
-        qc.mcx(list(range(n-1)), n - 1)
+        qc.mcx(list(range(n - 1)), n - 1)
         qc.h(n - 1)
-    qc.x(range(n))
-    qc.h(range(n))
+    else:
+        qc.z(0)
+    qc.x(list(range(n)))
+    qc.h(list(range(n)))
 
-    qc.measure(range(n), range(n))
+    qc.measure(list(range(n)), list(range(n)))
 
-    try:
-        backend = provider.get_backend("ibm_mumbai")#TODO: NEEDS TO BE CHANGED UNABLE TO ACCESS IBM BACKEND
-    except Exception as e:
-        print("[ERROR] Could not access IBM backend:", e)
+    # Aer me run if available else classical argmax#TODO: needs improvement
+    if HAVE_AER:
+        sim = AerSimulator()
+        tqc = transpile(qc, sim)
+        job = sim.run(tqc, shots=128)
+        try:
+            result = job.result()
+            counts = result.get_counts()
+            measured = int(max(counts, key=counts.get),2)
+            return measured if measured < original_len else best_action
+        except Exception as e:
+            print("[WARN] Aer execution failed", e)
+            return best_action
+    else:
+        print("[WARN] qiskit-aer nahi hai using classical argmax")
         return best_action
-    job = backend.run(qc, shots=1)
-    result = job.result()
-    counts = result.get_counts()
-    action = int(max(counts, key=counts.get), 2)
 
-    return action if action < original_len else best_action
-#A neural network to estimate the Q-values
+
 class DQNAgent:
-    def __init__(self, state_size, action_size, provider):
+    def __init__(self, state_size, action_size):
         self.state_size = state_size
         self.action_size = action_size
-        self.provider = provider
-        self.memory = deque(maxlen=2000)#past ko yaad rakh kai galti na kare
-        self.gamma = 0.99
-        self.epsilon = 1.0
+        self.memory = deque(maxlen=2000) #
+        self.gamma = 0.99 
+        self.epsilon = 1.0 # exploration
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.995
-        #exploration or exploitation dono ko control karega
-        self.model = self.build_model()#main Q-network
-        self.target_model = self.build_model()#slower one to stabalize training
+        self.model = self.build_model() #main_build
+        self.target_model = self.build_model()
         self.update_target_model()
-#building the model using keras
-#model sai training model mai copy 
+
+    # keras model build
     def build_model(self):
         model = tf.keras.Sequential([
             tf.keras.layers.Input(shape=(self.state_size,)),
@@ -170,18 +192,22 @@ class DQNAgent:
         model.compile(optimizer='adam', loss='mse')
         return model
 
+    
     def update_target_model(self):
         self.target_model.set_weights(self.model.get_weights())
 
-    def act(self, state):#Chooses an action using epsilon greedy policyl; RL
+    # epsilon greedy action chooses
+    def act(self, state):
         if np.random.rand() < self.epsilon:
-            return random.randint(0, self.action_size - 1)#random action for exploration
+            return random.randint(0, self.action_size - 1) # explore
         q_vals = self.model.predict(np.array([state]), verbose=0)[0]
-        return grover_select_action(q_vals, self.provider)#else the grover algorithm to select the best action based on Q-values
+        return grover_select_action(q_vals) # quantum inspired
 
+    # memory me store experience
     def remember(self, s, a, r, s_, done):
-        self.memory.append((s, a, r, s_, done))#stores the experience in memory
+        self.memory.append((s, a, r, s_, done))
 
+    # minibatch se train  model
     def replay(self, batch_size=32):
         if len(self.memory) < batch_size:
             return
@@ -195,8 +221,8 @@ class DQNAgent:
             self.model.fit(np.array([s]), target_f, epochs=1, verbose=0)
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
-#viSUALISATION USIG PYGAME
-#TODO:make a 3d stimulation and a use matplotlib to trrack its progress and reprentst using a graph
+
+
 def visualize(rover_pos, goal_pos, grid_size, grid, screen, cell_size):
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -212,31 +238,40 @@ def visualize(rover_pos, goal_pos, grid_size, grid, screen, cell_size):
             pygame.draw.rect(screen, color, rect)
             pygame.draw.rect(screen, (200, 200, 200), rect, 1)
 
-    pygame.draw.circle(screen, (0, 0, 255), (rover_pos[1] * cell_size + cell_size // 2, rover_pos[0] * cell_size + cell_size // 2), cell_size // 3)
-    pygame.draw.circle(screen, (0, 255, 0), (goal_pos[1] * cell_size + cell_size // 2, goal_pos[0] * cell_size + cell_size // 2), cell_size // 3)
+    pygame.draw.circle(screen, (0, 0, 255), (env.rover_pos[1] * cell_size + cell_size // 2, env.rover_pos[0] * cell_size + cell_size // 2), cell_size // 3)
+    pygame.draw.circle(screen, (0, 255, 0), (env.goal_pos[1] * cell_size + cell_size // 2, env.goal_pos[0] * cell_size + cell_size // 2), cell_size // 3)
 
     pygame.display.flip()
     pygame.time.wait(100)
 
+
 if __name__ == "__main__":
-    provider = get_ibm_provider()
+    ibm_service = get_ibm_service = None
+    if HAVE_IBM_RUNTIME:
+        try:
+            ibm_service = QiskitRuntimeService()
+        except Exception:
+            ibm_service = None
+
     env = MarsEnv(size=8, num_obstacles=10)
-    agent = DQNAgent(state_size=4, action_size=4, provider=provider)
+    agent = DQNAgent(state_size=4, action_size=4)
 
     pygame.init()
     cell_size = 500 // env.size
     screen = pygame.display.set_mode((500, 500))
     pygame.display.set_caption("Mars Rover Simulation")
 
+    # load model agar hai
     if os.path.exists("best_rover_model.h5"):
         agent.model.load_weights("best_rover_model.h5")
         agent.update_target_model()
         agent.epsilon = 0.1
-        print("\u2705 Loaded existing trained model.")
+        print(" Loaded existing trained model")
     else:
-        print("\ud83d\udd01 No existing model found. Training from scratch.")
+        print("No existing model found Training from scratch")
 
-    for episode in range(5):
+   
+    for episode in range(500):
         state = env.reset()
         total_reward = 0
         for t in range(50):
@@ -256,15 +291,16 @@ if __name__ == "__main__":
 
         if total_reward > best_total_reward:
             best_total_reward = total_reward
-            agent.model.save("best_rover_model.h5")
+            agent.model.save("best_rover_model.h5") # best model save
 
-        print(f"Episode {episode+1}: Total Reward = {round(total_reward, 2)} | Best = {round(best_total_reward, 2)}")
+        print(f"Episode {episode+1} Total Reward = {round(total_reward, 2)} | Best = {round(best_total_reward, 2)}")
 
-        db.collection("rover_training").document("progress").set({
+        #using firebase to save model
+        db.collection("rover_training").document(f"episode_{episode+1}").set({
             "episode": episode + 1,
             "epsilon": float(agent.epsilon),
             "best_reward": float(best_total_reward)
         })
 
     pygame.quit()
-#TODO: multiple files mai later dhift kardena functions and sdifreent classes ko
+s
