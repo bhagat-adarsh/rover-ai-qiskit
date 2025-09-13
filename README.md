@@ -55,23 +55,3 @@ The rover doesn't always pick the highest Q-value. Instead, it:
 - **Environment**: Grid-based Mars terrain with obstacles, a rover start point, and a goal.
 
 
-## 🛠 Requirements
-
-- Python 3.10+
-- TensorFlow
-- Qiskit
-- Pygame
-- NumPy
-
-
-Install dependencies:
-```bash
-pip install tensorflow qiskit pygame numpy
-'''
-
-# rover-ai-qiskit
-# rover-ai-qiskit
-# rover-ai-qiskit
-# rover-ai-qiskit
-# rover-ai-qiskit
-*NOTE--Its a sample project dedicating to exploring the qiskit framework*
