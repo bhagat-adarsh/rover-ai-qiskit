@@ -39,12 +39,16 @@ This prevents conflicts between different versions of packages like Qiskit and T
 pip install --upgrade pip
 
 pip install \
-  qiskit==2.0.2 \
-  qiskit-aer==0.13.3 \
-  qiskit-ibm-provider==0.11.0 \
-  pygame==2.5.2 \
-  tensorflow==2.19.0 \
-  python-dotenv==1.0.1
+  numpy>=1.22
+  tensorflow>=2.10
+  qiskit>=0.44.1
+  
+  qiskit-ibm-runtime>=0.23.0
+  python-dotenv>=1.0.0
+  pygame>=2.1.0
+  firebase-admin>=6.0.0
+  qiskit-aer
+
 ```
 
 Each version is chosen for compatibility with Python 3.10 and Qiskit >= 1.0 standards.
@@ -95,10 +99,7 @@ model.save_weights("model_weights.h5")
 
 #### Loading:
 
-```python
-if os.path.exists("model_weights.h5"):
-    model.load_weights("model_weights.h5")
-```
+
 
 * Ensures your AI doesn't retrain every time the game restarts
 
